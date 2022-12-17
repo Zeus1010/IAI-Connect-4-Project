@@ -3,6 +3,8 @@ import random
 import numpy as np
 from connect_helper import *
 import copy
+import torch as tr
+from neural import *
 
 DRAW = True
 OVER = True
@@ -101,11 +103,76 @@ def better_ai(state, max_depth, evaluate):
     if player == 1: action = np.argmin(utilities)
     return children[action], utilities[action]
 
+def nn_ai(state,max_depth,evaluate,net):
+    global NODE_COUNT
+    NODE_COUNT = NODE_COUNT + 1
+    if draw_state(state): 
+        return (None, 5)
+    elif player_win(state,state[0]):
+        return (None, 1000)
+    if max_depth == 0: 
+        x = encode(state[1]).unsqueeze(0)
+        u = net(x)
+        return (None, u)
+    
+    children = [perform_action(action,state) for action in valid_action(state[1])]
+    results = [better_ai(child, max_depth-1, evaluate) for child in children]
+
+    _, utilities = zip(*results)
+
+    player, board = state
+    if player == 2: action = np.argmax(utilities)
+    if player == 1: action = np.argmin(utilities)
+    return children[action], utilities[action]
+
 def getNodeCount():
     global NODE_COUNT
     temp = copy.deepcopy(NODE_COUNT)
     NODE_COUNT = 0
     return temp 
+
+def generate_data(ROW,COL, num_examples, max_depth):
+    examples = []
+    results = []
+    while len(examples) < num_examples:
+        state = initial_state(ROW,COL)
+        player, board = state
+        action = baseline_ai(board,False)
+        state = perform_action(action,state)
+
+        player, board = state
+        action = baseline_ai(board,False)
+        state = perform_action(action,state)
+        game_stat = False
+        while not game_stat:
+            player, board = state
+            old_player = player
+            if player == 1:
+                action = baseline_ai(board,verbose=False)
+                state = perform_action(action,state)
+            else:
+                state, utility = better_ai(state, max_depth, evaluate)
+
+            if player_win(state,old_player):    
+                    game_stat = OVER
+                
+            if draw_state(state):
+                game_stat = DRAW
+
+            examples.append(state[1])
+            results.append(evaluate(state))    
+    return (examples,results)
+
+def augment(examples):
+    augmented = []
+    states = examples[0]
+    utilities = examples[1]
+    for i in range(len(states)):
+        for k in range(4):
+            rot = np.rot90(states[i], k)
+            augmented.append((rot, utilities[i]))
+            augmented.append((rot[:,::-1], utilities[i]))
+    return augmented
 
 if __name__ == "__main__":
     prompt1 = ("\nChoose Problem Instance, here board size is the problem instance (Rows x Columns):\n"
@@ -128,12 +195,27 @@ if __name__ == "__main__":
                 "\t1 >> Human Opponent\n"
                 "\t2 >> Baseline AI Opponent\n" 
                 "\t3 >> Tree Search AI\n"
+                "\t4 >> Tree + Neural Network\n"
                 "Option ---->" )
 
     opponent = int(input(prompt2))
     state = initial_state(ROW, COL)
     player = 1
     game_stat = False
+
+    if opponent == 4:
+        print("Generating Data:")
+        training_examples = generate_data(ROW,COL, num_examples = 50, max_depth=3)
+        testing_examples = generate_data(ROW,COL, num_examples = 50, max_depth=3)
+        print("Training and Testing data created")
+        print("Training examples:%d" %len(training_examples[0]))
+        print("Training examples:%d" %len(testing_examples[0]))
+        ag_train  = augment(training_examples)
+        ag_test = augment(testing_examples)
+        print("\nAfter Augmentation")
+        print("Training examples:%d" %len(ag_train))
+        print("Training examples:%d" %len(ag_test))
+        net = train_model(ag_train,ag_test)
 
     # Implementation of the tweak in the rule
     player, board = state
@@ -145,6 +227,7 @@ if __name__ == "__main__":
     state = perform_action(action,state)
     print("Game Begins, with 1 piece of each player dropped at random place :")
     display_board(state)
+
 
     while not game_stat: 
         player, board = state
@@ -164,9 +247,9 @@ if __name__ == "__main__":
                 state = perform_action(action,state)
             elif opponent == 3:
                 state, utility = better_ai(state, DEPTH, evaluate)
-                print(utility)
+            elif opponent == 4:
+                state,utility = nn_ai(state,DEPTH,evaluate,net)
             player2_score = player2_score + evaluate(state)
-        
         display_board(state)
         
         if player_win(state,old_player):    
